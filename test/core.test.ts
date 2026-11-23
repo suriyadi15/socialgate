@@ -203,3 +203,11 @@ describe('twitter rendering', () => {
         expect(item.contentHtml).toContain('Cy:&ensp;quoted');
     });
 });
+
+describe('empty feed', () => {
+    test('keeps items as an empty array, JSON Feed requires it', () => {
+        const json = toJsonFeed({ title: 't', url: 'https://x.com/home', items: [] });
+        expect(json.items).toEqual([]);
+        expect(Object.keys(json)).toContain('items');
+    });
+});

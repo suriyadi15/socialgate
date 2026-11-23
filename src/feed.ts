@@ -22,14 +22,16 @@ export type Feed = {
 const compact = <T extends object>(object: T): T => Object.fromEntries(Object.entries(object).filter(([, value]) => value !== undefined && !(Array.isArray(value) && value.length === 0))) as T;
 
 /** JSON Feed 1.1, https://jsonfeed.org/version/1.1 */
-export const toJsonFeed = (feed: Feed, limit?: number) =>
-    compact({
+export const toJsonFeed = (feed: Feed, limit?: number) => ({
+    ...compact({
         version: 'https://jsonfeed.org/version/1.1',
         title: feed.title,
         home_page_url: feed.url,
         description: feed.description,
         icon: feed.icon,
-        items: (limit ? feed.items.slice(0, limit) : feed.items).map((item) =>
+    }),
+    // `items` is required by JSON Feed: an empty timeline is `[]`, not a missing key (compact would drop it)
+    items: (limit ? feed.items.slice(0, limit) : feed.items).map((item) =>
             compact({
                 id: item.url,
                 url: item.url,
@@ -47,5 +49,5 @@ export const toJsonFeed = (feed: Feed, limit?: number) =>
                     })
                 ),
             })
-        ),
-    });
+    ),
+});
