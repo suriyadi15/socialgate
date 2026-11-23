@@ -2,13 +2,14 @@
 import { ClientTransaction, fetchXDocument } from 'x-client-transaction-id';
 
 import { tryGet } from '../cache';
-import { getEnv } from '../context';
+import { getEnv, recordSession } from '../context';
 import { badRequest, HttpError, needsCredential, notFound } from '../errors';
 import type { Feed, Item } from '../feed';
 import { request } from '../http';
 
 const baseUrl = 'https://x.com/i/api';
-const bearerToken = 'Bearer Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
+export const apiUrl = baseUrl;
+export const bearerToken = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
 
 // Last known working query ids, replaced by the live ones when they can be fetched
 const fallbackIds: Record<string, string> = {
@@ -24,6 +25,9 @@ const fallbackIds: Record<string, string> = {
     TweetDetail: '559hs_YZNV4IgA3Z6zIIuw',
     // Likes is not in RSSHub's list; this id is the last one seen and is replaced by the live one
     Likes: 'eSSNbhECHHWWALkkQq-YTA',
+    // Write side (routes/twitter, platforms/twitter-post)
+    CreateTweet: 'l4hk8uVGvR-a8kzQ4nOhPA',
+    DeleteTweet: 'nxpZCY2K-I6QoFHAHeojFQ',
     AudioSpaceById: 'ipEqgz4P_bZCGY3fBnfsxQ',
 };
 
@@ -138,7 +142,7 @@ const gqlFeatures: Record<string, Record<string, boolean | string | number>> = {
 
 
 /** Query ids change with every web build, the community keeps a list of the current ones. */
-const getQueryIds = () =>
+export const getQueryIds = () =>
     tryGet('twitter:gql-ids', async () => {
         try {
             const response = await fetch('https://cdn.jsdelivr.net/gh/fa0311/TwitterInternalAPIDocument@master/docs/json/API.json', { signal: AbortSignal.timeout(15_000) });
@@ -167,35 +171,72 @@ const getTransactionKeys = (refresh: boolean) =>
         },
         refresh ? 0 : 3600
     );
-const getTransactionId = async (method: string, path: string, refresh: boolean) => {
+export const getTransactionId = async (method: string, path: string, refresh: boolean) => {
     const keys = await getTransactionKeys(refresh);
     return (Object.assign(Object.create(ClientTransaction.prototype), { keys }) as ClientTransaction).generateTransactionId(method, path);
 };
 
-// --- session cookies of the auth token ---
-const getCookies = (token: string) =>
-    tryGet<Record<string, string>>(`twitter:cookies:${token.slice(-8)}`, async () => {
-        const cookies: Record<string, string> = { auth_token: token };
-        const response = await request('https://x.com', { headers: { cookie: `auth_token=${token}` } });
-        for (const line of response.headers.getSetCookie()) {
-            const [pair] = line.split(';');
-            const index = pair.indexOf('=');
-            cookies[pair.slice(0, index)] = pair.slice(index + 1);
+// --- session cookies: the full jar (TWITTER_COOKIE) or only the auth_token ---
+export const parseJar = (text: string): Record<string, string> => {
+    const jar: Record<string, string> = {};
+    for (const part of text.split(/;\s*/)) {
+        const index = part.indexOf('=');
+        if (index > 0) {
+            jar[part.slice(0, index).trim()] = part.slice(index + 1);
         }
-        if (!cookies.ct0) {
-            throw needsCredential('Twitter did not accept TWITTER_AUTH_TOKEN, it is expired or blocked.');
+    }
+    return jar;
+};
+export const cookieString = (jar: Record<string, string>) =>
+    Object.entries(jar)
+        .map(([k, v]) => `${k}=${v}`)
+        .join('; ');
+
+export const requireCredential = () => {
+    const token = getEnv('TWITTER_AUTH_TOKEN');
+    const cookie = getEnv('TWITTER_COOKIE');
+    if (!token && !cookie) {
+        throw needsCredential('Twitter needs TWITTER_COOKIE (the cookie jar) or TWITTER_AUTH_TOKEN (the auth_token cookie of a logged-in account).');
+    }
+    return { token, cookie };
+};
+
+const loadCookies = async (): Promise<Record<string, string>> => {
+    const { token, cookie } = requireCredential();
+    const jar: Record<string, string> = cookie ? parseJar(cookie) : {};
+    if (token && !jar.auth_token) {
+        jar.auth_token = token;
+    }
+    if (!jar.auth_token) {
+        throw needsCredential('TWITTER_COOKIE has no auth_token.');
+    }
+    if (jar.ct0) {
+        return jar;
+    }
+    const response = await request('https://x.com', { headers: { cookie: cookieString(jar) } });
+    for (const line of response.headers.getSetCookie()) {
+        const [pair] = line.split(';');
+        const index = pair.indexOf('=');
+        if (index > 0) {
+            jar[pair.slice(0, index)] = pair.slice(index + 1);
         }
-        return cookies;
-    }, 3600);
+    }
+    if (!jar.ct0) {
+        throw needsCredential('Twitter did not accept the credential, it is expired or blocked.');
+    }
+    // The caller keeps the full jar next time, so the bootstrap is not repeated
+    recordSession({ TWITTER_COOKIE: cookieString(jar) });
+    return jar;
+};
+
+/** Keys are bound to the credentials of the request; `refresh` skips the cache. */
+export const getCookies = (refresh = false) => tryGet<Record<string, string>>('twitter:cookies', loadCookies, refresh ? 0 : 3600);
 
 type Params = Record<string, string | number | boolean | undefined>;
 
 const twitterFetch = async (url: string, transactionPath: string | undefined, retryWithFreshId: () => Promise<any>, refreshTransactionId: boolean): Promise<any> => {
-    const token = getEnv('TWITTER_AUTH_TOKEN');
-    if (!token) {
-        throw needsCredential('Twitter needs TWITTER_AUTH_TOKEN (the auth_token cookie of a logged-in account).');
-    }
-    const cookies = await getCookies(token);
+    requireCredential();
+    const cookies = await getCookies();
     const transactionId = transactionPath ? await getTransactionId('GET', transactionPath, refreshTransactionId) : undefined;
     const response = await request(url, {
         headers: {
@@ -233,9 +274,7 @@ const twitterFetch = async (url: string, transactionPath: string | undefined, re
 };
 
 const twitterGet = async (operation: string, variables: Params, refreshTransactionId = false): Promise<any> => {
-    if (!getEnv('TWITTER_AUTH_TOKEN')) {
-        throw needsCredential('Twitter needs TWITTER_AUTH_TOKEN (the auth_token cookie of a logged-in account).');
-    }
+    requireCredential();
     const ids = await getQueryIds();
     const path = `/graphql/${ids[operation]}/${operation}`;
     const query = new URLSearchParams({ variables: JSON.stringify(variables), features: JSON.stringify(gqlFeatures[operation]) });

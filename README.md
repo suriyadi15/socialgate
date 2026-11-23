@@ -1,17 +1,17 @@
-# rssgate
+# socialgate
 
-A small service that returns feeds (JSON Feed 1.1) of Twitter/X, Instagram, Threads, Facebook, TikTok and YouTube for a backend of your own.
-Credentials and a proxy travel with each request. The scraping logic is ported from [RSSHub](https://github.com/DIYgod/RSSHub), see `UPSTREAM.md`.
+A small stateless service for a backend of your own: it **reads** feeds (JSON Feed 1.1) of Twitter/X, Instagram, Threads, Facebook, TikTok and YouTube, **posts** to X, and **checks and renews the session** of an account.
+Credentials and a proxy travel with each request, nothing is stored. It is the merge of rssgate (read) and postgate (write): both used the same cookie, so there is one session per account now. The scraping logic is ported from [RSSHub](https://github.com/DIYgod/RSSHub), see `UPSTREAM.md`.
 
 ## Run
 
 ```bash
-docker run -d -p 3000:3000 -e ACCESS_KEY=change-me ghcr.io/suriyadi15/rssgate:latest
-# or build it yourself: docker build -t rssgate .
+docker run -d -p 3000:3000 -e ACCESS_KEY=change-me ghcr.io/suriyadi15/socialgate:latest
+# or build it yourself: docker build -t socialgate .
 # or without Docker: bun install && ACCESS_KEY=change-me bun src/index.ts
 ```
 
-Image tags on `ghcr.io/suriyadi15/rssgate` (linux/amd64 and linux/arm64): `latest` is the head of `main`, `sha-<commit>` is one build, `X.Y.Z` and `X.Y` follow the git tags `vX.Y.Z`.
+Image tags on `ghcr.io/suriyadi15/socialgate` (linux/amd64 and linux/arm64): `latest` is the head of `main`, `sha-<commit>` is one build, `X.Y.Z` and `X.Y` follow the git tags `vX.Y.Z`.
 
 | Env           | Default | Meaning                                                  |
 | ------------- | ------- | -------------------------------------------------------- |
@@ -26,12 +26,12 @@ The credential keys below and `PROXY_URI` may also be set as process env, they a
 
 ```bash
 curl -H 'Authorization: Bearer change-me' \
-     -H 'X-Rssgate-Config: {"TWITTER_AUTH_TOKEN":"<auth_token cookie>","PROXY_URI":"socks5h://user:pass@host:1080"}' \
+     -H 'X-Gate-Config: {"TWITTER_COOKIE":"<cookie jar, or just auth_token=...>","PROXY_URI":"socks5h://user:pass@host:1080"}' \
      'http://localhost:3000/twitter/user/jack?limit=10'
 ```
 
 - `Authorization: Bearer <ACCESS_KEY>` (or `?key=`) is required, except for `/healthz`.
-- `X-Rssgate-Config` is a JSON object, only the credential keys of the table [below](#credentials-and-example-values) and `PROXY_URI` (`http`, `https`, `socks5`, `socks5h`) are accepted. Values are never logged or echoed.
+- `X-Gate-Config` (`X-Rssgate-Config` and `X-Postgate-Config` still work) is a JSON object, only the credential keys of the table [below](#credentials-and-example-values) and `PROXY_URI` (`http`, `https`, `socks5`, `socks5h`) are accepted. Values are never logged or echoed.
 - `limit=N` (1..100) trims the items. `Cache-Control: no-cache` skips the feed cache.
 - Cache entries are keyed by the credentials of the request: data fetched with one account is never served to another account or to a request without credentials.
 
@@ -60,7 +60,7 @@ Query options of the timeline routes: `includeReplies` (user only, default false
 
 ```bash
 curl -H 'Authorization: Bearer replace-with-a-long-random-string' \
-     -H 'X-Rssgate-Config: {"TWITTER_AUTH_TOKEN":"0a1b2c3d4e5f60718293a4b5c6d7e8f901234567"}' \
+     -H 'X-Gate-Config: {"TWITTER_AUTH_TOKEN":"0a1b2c3d4e5f60718293a4b5c6d7e8f901234567"}' \
      'http://localhost:3000/twitter/media/jack?limit=10'
 ```
 
@@ -75,7 +75,7 @@ curl -H 'Authorization: Bearer replace-with-a-long-random-string' \
 
 ```bash
 curl -H 'Authorization: Bearer replace-with-a-long-random-string' \
-     -H 'X-Rssgate-Config: {"INSTAGRAM_COOKIE":"sessionid=12345678%3AAbCdEf%3A5; csrftoken=AbCdEfGh123"}' \
+     -H 'X-Gate-Config: {"INSTAGRAM_COOKIE":"sessionid=12345678%3AAbCdEf%3A5; csrftoken=AbCdEfGh123"}' \
      'http://localhost:3000/instagram/stories/someuser'
 ```
 
@@ -104,7 +104,7 @@ curl -H 'Authorization: Bearer replace-with-a-long-random-string' 'http://localh
 
 ```bash
 curl -H 'Authorization: Bearer replace-with-a-long-random-string' \
-     -H 'X-Rssgate-Config: {"FACEBOOK_COOKIE":"c_user=100012345678901; xs=12%3AAbCdEf%3A2%3A1712345678%3A-1%3A-1"}' \
+     -H 'X-Gate-Config: {"FACEBOOK_COOKIE":"c_user=100012345678901; xs=12%3AAbCdEf%3A2%3A1712345678%3A-1%3A-1"}' \
      'http://localhost:3000/facebook/group/613870175328566'
 ```
 
@@ -145,6 +145,32 @@ curl -H 'Authorization: Bearer replace-with-a-long-random-string' 'http://localh
 
 Errors are `{"error":{"message":"..."}}`: 400 bad parameter or header, 401 wrong key, 404 not found, 429 platform rate limit, 502 platform failure, 503 credential missing/expired/blocked.
 
+## Write and session routes
+
+Not cached, never retried (a repeated write could publish twice). Errors are `{"error":{"message":"..."}}`: 400 bad input, 401 wrong key, 404 not found, 409 duplicate, 413 too large, 422 refused by the platform (looks automated), 429 rate limit, 502 platform failure, 503 credential missing/expired/locked.
+
+| Route                       | Body                                              | Returns                              |
+| --------------------------- | ------------------------------------------------- | ------------------------------------ |
+| `GET /twitter/session`      |                                                   | `{account: {id, username, name}}`    |
+| `GET /instagram/session`    |                                                   | `{account: {id}}`                    |
+| `GET /facebook/session`     |                                                   | `{account: {id}}`                    |
+| `GET /twitter/me`           |                                                   | `{id, username, name}`               |
+| `POST /twitter/tweet`       | `{text, replyTo?, quoteUrl?, sensitive?, media?}` | `{id, url}`                          |
+| `DELETE /twitter/tweet/:id` |                                                   | `{id, deleted: true}`                |
+
+`/session` always asks the platform (no cache): 200 means the credential is alive, 503 that it is expired or locked, 429 that the account is limited.
+When the platform changed the cookies during a request (new `ct0`, a jar built from a bare `auth_token`, a refreshed Facebook cookie), the response carries `X-Gate-Session: {"TWITTER_COOKIE":"auth_token=...; ct0=..."}`, the same shape as `X-Gate-Config`. The caller stores it and sends it next time; the gateway itself keeps nothing.
+`replyTo` is a tweet id or URL, `quoteUrl` a tweet URL. `media` is up to 4 images, or one GIF or video, each `{"url": "https://..."}` or `{"data": "<base64>", "type": "image/png"}`. Limits: image 5 MB, GIF 15 MB, video 512 MB (the JSON body is capped at 32 MB, use `url` for large files).
+
+> Posting through the web session is against X's terms and can get an account locked (error codes 226 / 326). Use a test account first. Query ids change with X's web builds, when a call breaks compare with [TwitterInternalAPIDocument](https://github.com/fa0311/TwitterInternalAPIDocument).
+
+```bash
+curl -X POST -H 'Authorization: Bearer change-me' \
+     -H 'X-Gate-Config: {"TWITTER_COOKIE":"auth_token=0a1b2c3d4e5f60718293a4b5c6d7e8f901234567"}' \
+     -H 'Content-Type: application/json' -d '{"text":"hello"}' \
+     http://localhost:3000/twitter/tweet
+```
+
 ## Credentials and example values
 
 All values below are fake.
@@ -171,17 +197,17 @@ Example request per credential:
 ```bash
 # Twitter + proxy
 curl -H 'Authorization: Bearer replace-with-a-long-random-string' \
-     -H 'X-Rssgate-Config: {"TWITTER_AUTH_TOKEN":"0a1b2c3d4e5f60718293a4b5c6d7e8f901234567","PROXY_URI":"socks5h://user:pass@127.0.0.1:1080"}' \
+     -H 'X-Gate-Config: {"TWITTER_AUTH_TOKEN":"0a1b2c3d4e5f60718293a4b5c6d7e8f901234567","PROXY_URI":"socks5h://user:pass@127.0.0.1:1080"}' \
      'http://localhost:3000/twitter/user/jack?limit=10'
 
 # Instagram, private account
 curl -H 'Authorization: Bearer replace-with-a-long-random-string' \
-     -H 'X-Rssgate-Config: {"INSTAGRAM_COOKIE":"sessionid=12345678%3AAbCdEf%3A5; csrftoken=AbCdEfGh123"}' \
+     -H 'X-Gate-Config: {"INSTAGRAM_COOKIE":"sessionid=12345678%3AAbCdEf%3A5; csrftoken=AbCdEfGh123"}' \
      'http://localhost:3000/instagram/user/someprivateuser'
 
 # Facebook
 curl -H 'Authorization: Bearer replace-with-a-long-random-string' \
-     -H 'X-Rssgate-Config: {"FACEBOOK_COOKIE":"c_user=100012345678901; xs=12%3AAbCdEf%3A2%3A1712345678%3A-1%3A-1; datr=AbCdEfGhIjKl"}' \
+     -H 'X-Gate-Config: {"FACEBOOK_COOKIE":"c_user=100012345678901; xs=12%3AAbCdEf%3A2%3A1712345678%3A-1%3A-1; datr=AbCdEfGhIjKl"}' \
      'http://localhost:3000/facebook/page/Meta'
 ```
 
@@ -199,10 +225,10 @@ Notes:
 bun install
 bun test
 bunx tsc --noEmit
-scripts/check-upstream.sh   # RSSHub fixes to adopt (clones the official repo into ~/.cache/rssgate)
+scripts/check-upstream.sh   # RSSHub fixes to adopt (clones the official repo into ~/.cache/socialgate)
 ```
 
-Layout: `src/platforms/*` scrape one platform each, `src/routes/*` map URLs to them, `src/{context,cache,http,feed}.ts` are the shared parts.
+Layout: `src/platforms/*` talk to one platform each (`twitter-post.ts` is the write side of X), `src/routes/*` map URLs to them (`routes/session.ts` holds the write and session routes), `src/{context,cache,http,feed}.ts` are the shared parts.
 A GitHub Action (`.github/workflows/upstream.yml`) runs the same check every Monday and opens or updates an issue when RSSHub changed a ported file.
 Platforms change often; when a feed breaks, compare with the RSSHub files in `UPSTREAM.md` first.
 

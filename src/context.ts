@@ -3,16 +3,17 @@ import { createHash } from 'node:crypto';
 
 import { badRequest } from './errors';
 
-/** Credentials and proxy a request may bring itself, in the X-Rssgate-Config header. */
-export const allowedNames = ['TWITTER_AUTH_TOKEN', 'TWITTER_CONSUMER_KEY', 'TWITTER_CONSUMER_SECRET', 'INSTAGRAM_COOKIE', 'FACEBOOK_COOKIE', 'YOUTUBE_CLIENT_ID', 'YOUTUBE_CLIENT_SECRET', 'YOUTUBE_REFRESH_TOKEN', 'PROXY_URI'] as const;
+/** Credentials and proxy a request may bring itself, in the X-Gate-Config header (X-Rssgate-Config and X-Postgate-Config are accepted too). */
+export const allowedNames = ['TWITTER_AUTH_TOKEN', 'TWITTER_COOKIE', 'TWITTER_CONSUMER_KEY', 'TWITTER_CONSUMER_SECRET', 'INSTAGRAM_COOKIE', 'FACEBOOK_COOKIE', 'YOUTUBE_CLIENT_ID', 'YOUTUBE_CLIENT_SECRET', 'YOUTUBE_REFRESH_TOKEN', 'PROXY_URI'] as const;
 type Name = (typeof allowedNames)[number];
 
-type Store = { env: Partial<Record<Name, string>>; scope: string };
+type Store = { env: Partial<Record<Name, string>>; scope: string; session: Partial<Record<Name, string>> };
 const storage = new AsyncLocalStorage<Store>();
 
 const maxHeaderLength = 8192;
 const proxyProtocols = new Set(['http:', 'https:', 'socks5:', 'socks5h:']);
-const headerName = 'X-Rssgate-Config';
+const headerName = 'X-Gate-Config';
+export const configHeaderNames = ['x-gate-config', 'x-rssgate-config', 'x-postgate-config'] as const;
 
 export const parseConfigHeader = (header: string): Store['env'] => {
     if (header.length > maxHeaderLength) {
@@ -59,10 +60,20 @@ const scopeOf = (env: Store['env']) =>
               .digest('hex')
               .slice(0, 16);
 
-export const runWithEnv = <T>(env: Store['env'], fn: () => T): T => storage.run({ env, scope: scopeOf(env) }, fn);
+export const runWithEnv = <T>(env: Store['env'], fn: () => T): T => storage.run({ env, scope: scopeOf(env), session: {} }, fn);
 
 /** The value the request brought, else the one of the process environment. */
 export const getEnv = (name: Name): string | undefined => storage.getStore()?.env[name] || process.env[name] || undefined;
 
 /** Identifies the credentials of the running request, so cached data is never shared between credentials. */
 export const getScope = (): string => storage.getStore()?.scope ?? '';
+
+/** The platform changed the credential (rotated cookie, fresh jar): the caller gets it back in the X-Gate-Session header. */
+export const recordSession = (update: Partial<Record<Name, string>>): void => {
+    const store = storage.getStore();
+    if (store) {
+        Object.assign(store.session, update);
+    }
+};
+
+export const getSessionUpdates = (): Partial<Record<Name, string>> => storage.getStore()?.session ?? {};

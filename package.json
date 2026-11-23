@@ -1,6 +1,6 @@
 {
-    "name": "rssgate",
-    "version": "0.2.0",
+    "name": "socialgate",
+    "version": "0.3.0",
     "license": "AGPL-3.0-only",
     "private": true,
     "type": "module",

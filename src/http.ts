@@ -20,7 +20,7 @@ const browserHeaders: Record<string, string> = {
 export type FetchOptions = {
     method?: string;
     headers?: Record<string, string>;
-    body?: string | URLSearchParams;
+    body?: string | URLSearchParams | FormData | Uint8Array;
     json?: unknown;
     /** Seconds. */
     timeout?: number;
@@ -38,6 +38,7 @@ export const request = async (url: string, options: FetchOptions = {}): Promise<
         body = JSON.stringify(options.json);
         headers['content-type'] ??= 'application/json';
     }
+    // Callers that write (posting) pass retries: 0, a repeated POST could publish twice
     const retries = options.retries ?? 2;
     let lastError: unknown;
     for (let attempt = 0; attempt <= retries; attempt++) {
@@ -46,7 +47,7 @@ export const request = async (url: string, options: FetchOptions = {}): Promise<
             const response = await fetch(url, {
                 method: options.method ?? (body === undefined ? 'GET' : 'POST'),
                 headers,
-                body,
+                body: body as BodyInit | undefined,
                 redirect: options.redirect ?? 'follow',
                 signal: AbortSignal.timeout((options.timeout ?? 30) * 1000),
                 // Bun's own option, undici dispatchers are ignored by Bun

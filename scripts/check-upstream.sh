@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Lists commits of the official RSSHub repo that touched the files rssgate was ported from,
+# Lists commits of the official RSSHub repo that touched the files socialgate was ported from,
 # newer than the commit recorded for each file in UPSTREAM.md.
 #
 #   scripts/check-upstream.sh            # prints the list, exit 0
@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."
 
 REPO="${RSSHUB_REPO:-https://github.com/DIYgod/RSSHub.git}"
 BRANCH="${RSSHUB_BRANCH:-master}"
-DIR="${RSSHUB_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/rssgate/rsshub}"
+DIR="${RSSHUB_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/socialgate/rsshub}"
 
 if [ ! -d "$DIR/.git" ] && [ ! -f "$DIR/HEAD" ]; then
     # Commits and trees only, no file contents: enough for `git log -- <path>`

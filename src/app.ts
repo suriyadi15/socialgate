@@ -1,11 +1,13 @@
 import { timingSafeEqual } from 'node:crypto';
 
 import { Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 
 import { tryGet } from './cache';
-import { parseConfigHeader, runWithEnv } from './context';
-import { HttpError } from './errors';
+import { configHeaderNames, getSessionUpdates, parseConfigHeader, runWithEnv } from './context';
+import { badRequest, HttpError } from './errors';
 import { toJsonFeed } from './feed';
+import { actions } from './routes/session';
 import { facebook } from './routes/facebook';
 import { instagram } from './routes/instagram';
 import { threads } from './routes/threads';
@@ -34,9 +36,46 @@ export const createApp = (accessKey: string) => {
         if (!sameKey(given, accessKey)) {
             throw new HttpError(401, 'Access denied, send the access key as "Authorization: Bearer <key>".');
         }
-        const header = c.req.header('x-rssgate-config');
-        await runWithEnv(header === undefined ? {} : parseConfigHeader(header), () => next());
+        const header = configHeaderNames.map((name) => c.req.header(name)).find((value) => value !== undefined);
+        await runWithEnv(header === undefined ? {} : parseConfigHeader(header), async () => {
+            await next();
+            // The platform changed the credential during this request: the caller stores it
+            const updates = getSessionUpdates();
+            if (Object.keys(updates).length > 0) {
+                c.res.headers.set('X-Gate-Session', JSON.stringify(updates));
+            }
+        });
     });
+
+    app.use(
+        '*',
+        bodyLimit({
+            maxSize: 32 * 1024 * 1024,
+            onError: () => {
+                throw new HttpError(413, 'The body is too large.');
+            },
+        })
+    );
+
+    for (const [namespace, routes] of Object.entries(actions)) {
+        for (const [path, methods] of Object.entries(routes)) {
+            for (const [method, handler] of Object.entries(methods)) {
+                app.on(method, `/${namespace}${path}`, async (c) => {
+                    let body: unknown;
+                    if (method === 'POST') {
+                        try {
+                            body = await c.req.json();
+                        } catch {
+                            throw badRequest('The body must be valid JSON.');
+                        }
+                    }
+                    const result = await handler!({ params: c.req.param() as Record<string, string>, body });
+                    c.header('Cache-Control', 'no-store');
+                    return c.json(result);
+                });
+            }
+        }
+    }
 
     const groups: Record<string, Routes> = { twitter, instagram, threads, facebook, tiktok, youtube };
     for (const [namespace, routes] of Object.entries(groups)) {

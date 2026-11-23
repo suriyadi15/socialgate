@@ -2,10 +2,10 @@
 import { randomBytes } from 'node:crypto';
 
 import { tryGet } from '../cache';
-import { getEnv } from '../context';
+import { getEnv, recordSession } from '../context';
 import { HttpError, needsCredential, notFound } from '../errors';
 import type { Feed, Item } from '../feed';
-import { getText } from '../http';
+import { getText, request } from '../http';
 import { parseDate } from '../time';
 
 const baseUrl = 'https://www.facebook.com';
@@ -405,4 +405,36 @@ export const getReelsFeed = async (id: string): Promise<Feed> => {
             };
         }),
     };
+};
+
+/** Is FACEBOOK_COOKIE still a logged-in session? Cookies the platform refreshes go back to the caller (X-Gate-Session). */
+export const getFacebookSession = async () => {
+    const cookie = getEnv('FACEBOOK_COOKIE');
+    if (!cookie) {
+        throw needsCredential('Facebook sessions need FACEBOOK_COOKIE.');
+    }
+    const response = await request(`${baseUrl}/ajax/dtsg/?__a=1`, { headers: { cookie } });
+    if (response.status === 401 || response.status === 403) {
+        throw needsCredential('Facebook refused FACEBOOK_COOKIE, it is expired or blocked.');
+    }
+    const token = await response
+        .text()
+        .then((t) => JSON.parse(t.replace('for (;;);', '')).payload?.token as string | undefined)
+        .catch(() => undefined);
+    if (!token) {
+        throw needsCredential('Facebook did not accept FACEBOOK_COOKIE, it is expired or blocked.');
+    }
+    const jar = Object.fromEntries(cookie.split(/;\s*/).filter(Boolean).map((p) => [p.slice(0, p.indexOf('=')), p.slice(p.indexOf('=') + 1)]));
+    for (const line of response.headers.getSetCookie()) {
+        const [pair] = line.split(';');
+        const index = pair.indexOf('=');
+        if (index > 0 && pair.slice(index + 1) !== '' && pair.slice(index + 1) !== 'deleted') {
+            jar[pair.slice(0, index)] = pair.slice(index + 1);
+        }
+    }
+    const next = Object.entries(jar).map(([k, v]) => `${k}=${v}`).join('; ');
+    if (next !== cookie) {
+        recordSession({ FACEBOOK_COOKIE: next });
+    }
+    return { account: { id: jar.c_user } };
 };

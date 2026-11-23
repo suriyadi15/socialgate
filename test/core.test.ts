@@ -99,7 +99,7 @@ describe('app', () => {
         expect((await app.request('/youtube/channel/x', { headers: { authorization: 'Bearer wrong' } })).status).toBe(401);
     });
     test('a bad header is a 400', async () => {
-        const response = await app.request('/youtube/channel/x', { headers: { authorization: 'Bearer secret', 'x-rssgate-config': '{"ACCESS_KEY":"x"}' } });
+        const response = await app.request('/youtube/channel/x', { headers: { authorization: 'Bearer secret', 'x-gate-config': '{"ACCESS_KEY":"x"}' } });
         expect(response.status).toBe(400);
         expect(((await response.json()) as any).error.message).toContain('cannot be set per request');
     });

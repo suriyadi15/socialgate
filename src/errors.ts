@@ -1,7 +1,7 @@
 /** An error with an HTTP status that can be sent to the client as it is. */
 export class HttpError extends Error {
     constructor(
-        readonly status: 400 | 401 | 404 | 429 | 502 | 503,
+        readonly status: 400 | 401 | 404 | 409 | 413 | 422 | 429 | 502 | 503,
         message: string
     ) {
         super(message);

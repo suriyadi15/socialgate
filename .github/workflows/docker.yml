@@ -30,13 +30,13 @@ jobs:
                   context: .
                   platforms: linux/amd64
                   load: true
-                  tags: rssgate:smoke
+                  tags: socialgate:smoke
                   cache-from: type=gha
                   cache-to: type=gha,mode=max
 
             - name: Smoke test
               run: |
-                  docker run -d --name smoke -e ACCESS_KEY=ci-key -p 3000:3000 rssgate:smoke
+                  docker run -d --name smoke -e ACCESS_KEY=ci-key -p 3000:3000 socialgate:smoke
                   for i in $(seq 1 20); do
                       curl -fs http://127.0.0.1:3000/healthz && break
                       sleep 1

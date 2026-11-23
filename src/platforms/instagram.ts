@@ -2,7 +2,7 @@
 import { CookieJar } from 'tough-cookie';
 
 import { tryGet } from '../cache';
-import { getEnv } from '../context';
+import { getEnv, recordSession } from '../context';
 import { HttpError, needsCredential, notFound } from '../errors';
 import type { Feed, Item } from '../feed';
 import { escapeHtml, img, textToHtml, video } from '../html';
@@ -370,4 +370,26 @@ export const getUserFeed = async (username: string): Promise<Feed> => {
         icon: user!.hd_profile_pic_url_info?.url ?? user!.profile_pic_url,
         items: nodes.map((node) => renderItem(node)),
     };
+};
+
+/** Is INSTAGRAM_COOKIE still a logged-in session? A rotated cookie jar goes back to the caller (X-Gate-Session). */
+export const getInstagramSession = async () => {
+    const cookie = requireCookie('sessions');
+    const jar = await cookieJarOf(cookie);
+    const page = await loadPage(`${baseUrl}/`, jar);
+    if (page.url.includes('/accounts/login/')) {
+        throw refusedCookie(cookie);
+    }
+    if (page.url.includes('/accounts/suspended/')) {
+        throw needsCredential('The Instagram account of the cookie is suspended.');
+    }
+    if (!(await checkLogin(jar))) {
+        throw refusedCookie(cookie);
+    }
+    const next = (await jar.getCookies(baseUrl)).map((c) => `${c.key}=${c.value}`).join('; ');
+    if (next && next !== cookie) {
+        recordSession({ INSTAGRAM_COOKIE: next });
+    }
+    const userId = /(?:^|;\s*)ds_user_id=(\d+)/.exec(next)?.[1];
+    return { account: { id: userId } };
 };

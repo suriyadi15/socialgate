@@ -27,7 +27,7 @@ jobs:
               env:
                   GH_TOKEN: ${{ github.token }}
               run: |
-                  title='RSSHub changed files rssgate was ported from'
+                  title='RSSHub changed files socialgate was ported from'
                   {
                       echo 'Commits of the official RSSHub repo that touched the ported files since the commit recorded in `UPSTREAM.md`.'
                       echo 'Adopt what matters in `src/platforms/*`, then move the commits in `UPSTREAM.md` forward.'
