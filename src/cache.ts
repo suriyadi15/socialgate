@@ -41,3 +41,8 @@ export const clearCache = () => {
     entries.clear();
     inflight.clear();
 };
+
+/** Replaces a cached value (e.g. a cookie jar the platform just renewed). Keys are bound to the credentials of the request. */
+export const putCache = (key: string, value: unknown, ttl = defaultTtl): void => {
+    entries.set(scoped(key), { value, expires: Date.now() + ttl * 1000 });
+};

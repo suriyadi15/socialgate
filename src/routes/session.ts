@@ -31,7 +31,7 @@ const asTweetInput = (body: unknown): TweetInput => {
 /** Action routes per platform. `/session` is the same on every platform: is the credential still alive, and who is it. */
 export const actions: Record<string, ActionRoutes> = {
     twitter: {
-        '/session': { GET: () => getTwitterSession() },
+        '/session': { GET: ({ query }) => getTwitterSession(query.username) },
         '/me': { GET: () => getMe() },
         '/tweet': { POST: ({ body }) => postTweet(asTweetInput(body)) },
         '/tweet/:id': { DELETE: ({ params }) => deleteTweet(params.id) },

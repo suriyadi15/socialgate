@@ -1,7 +1,7 @@
 // Ported from RSSHub lib/routes/twitter/api/web-api/{api,utils,constants,gql-id-resolver,client-transaction-id}.ts and lib/routes/twitter/utils.ts
 import { ClientTransaction, fetchXDocument } from 'x-client-transaction-id';
 
-import { tryGet } from '../cache';
+import { putCache, tryGet } from '../cache';
 import { getEnv, recordSession } from '../context';
 import { badRequest, HttpError, needsCredential, notFound } from '../errors';
 import type { Feed, Item } from '../feed';
@@ -229,12 +229,31 @@ const loadCookies = async (): Promise<Record<string, string>> => {
     return jar;
 };
 
+/**
+ * X answers 401/403 with a fresh `ct0` when the csrf cookie went stale, the account itself is fine. Returns the renewed jar
+ * (also cached and reported to the caller in X-Gate-Session), or undefined when the response brings no new `ct0`.
+ */
+export const renewCsrf = (jar: Record<string, string>, response: Response): Record<string, string> | undefined => {
+    const fresh = response.headers
+        .getSetCookie()
+        .map((line) => line.split(';')[0])
+        .find((pair) => pair.startsWith('ct0='))
+        ?.slice(4);
+    if (!fresh || fresh === jar.ct0) {
+        return undefined;
+    }
+    const next = { ...jar, ct0: fresh };
+    putCache('twitter:cookies', next, 3600);
+    recordSession({ TWITTER_COOKIE: cookieString(next) });
+    return next;
+};
+
 /** Keys are bound to the credentials of the request; `refresh` skips the cache. */
 export const getCookies = (refresh = false) => tryGet<Record<string, string>>('twitter:cookies', loadCookies, refresh ? 0 : 3600);
 
 type Params = Record<string, string | number | boolean | undefined>;
 
-const twitterFetch = async (url: string, transactionPath: string | undefined, retryWithFreshId: () => Promise<any>, refreshTransactionId: boolean): Promise<any> => {
+const twitterFetch = async (url: string, transactionPath: string | undefined, retryWithFreshId: () => Promise<any>, refreshTransactionId: boolean, csrfRetried = false): Promise<any> => {
     requireCredential();
     const cookies = await getCookies();
     const transactionId = transactionPath ? await getTransactionId('GET', transactionPath, refreshTransactionId) : undefined;
@@ -261,6 +280,9 @@ const twitterFetch = async (url: string, transactionPath: string | undefined, re
     if (response.status === 404 && transactionId && !refreshTransactionId) {
         return retryWithFreshId();
     }
+    if ((response.status === 401 || response.status === 403) && !csrfRetried && renewCsrf(cookies, response)) {
+        return twitterFetch(url, transactionPath, retryWithFreshId, refreshTransactionId, true);
+    }
     if (response.status === 401 || response.status === 403) {
         throw needsCredential('Twitter refused TWITTER_AUTH_TOKEN, it is expired, locked or blocked.');
     }
@@ -273,7 +295,7 @@ const twitterFetch = async (url: string, transactionPath: string | undefined, re
     return response.json();
 };
 
-const twitterGet = async (operation: string, variables: Params, refreshTransactionId = false): Promise<any> => {
+export const twitterGet = async (operation: string, variables: Params, refreshTransactionId = false): Promise<any> => {
     requireCredential();
     const ids = await getQueryIds();
     const path = `/graphql/${ids[operation]}/${operation}`;

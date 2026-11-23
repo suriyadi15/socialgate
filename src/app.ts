@@ -69,7 +69,7 @@ export const createApp = (accessKey: string) => {
                             throw badRequest('The body must be valid JSON.');
                         }
                     }
-                    const result = await handler!({ params: c.req.param() as Record<string, string>, body });
+                    const result = await handler!({ params: c.req.param() as Record<string, string>, query: c.req.query(), body });
                     c.header('Cache-Control', 'no-store');
                     return c.json(result);
                 });

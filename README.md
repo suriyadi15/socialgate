@@ -151,14 +151,15 @@ Not cached, never retried (a repeated write could publish twice). Errors are `{"
 
 | Route                       | Body                                              | Returns                              |
 | --------------------------- | ------------------------------------------------- | ------------------------------------ |
-| `GET /twitter/session`      |                                                   | `{account: {id, username, name}}`    |
+| `GET /twitter/session`      | query `username` (recommended)                    | `{account: {id, username, name}}`    |
 | `GET /instagram/session`    |                                                   | `{account: {id}}`                    |
 | `GET /facebook/session`     |                                                   | `{account: {id}}`                    |
 | `GET /twitter/me`           |                                                   | `{id, username, name}`               |
 | `POST /twitter/tweet`       | `{text, replyTo?, quoteUrl?, sensitive?, media?}` | `{id, url}`                          |
 | `DELETE /twitter/tweet/:id` |                                                   | `{id, deleted: true}`                |
 
-`/session` always asks the platform (no cache): 200 means the credential is alive, 503 that it is expired or locked, 429 that the account is limited.
+`/session` always asks the platform (no cache). For X pass `?username=<account>`: the check is a logged-in `UserByScreenName` read, the call X accepts reliably; without it the account id comes from the `twid` cookie, and a jar without `twid` only proves that X handed out a `ct0`.
+`/session` answers: 200 means the credential is alive, 503 that it is expired or locked, 429 that the account is limited.
 When the platform changed the cookies during a request (new `ct0`, a jar built from a bare `auth_token`, a refreshed Facebook cookie), the response carries `X-Gate-Session: {"TWITTER_COOKIE":"auth_token=...; ct0=..."}`, the same shape as `X-Gate-Config`. The caller stores it and sends it next time; the gateway itself keeps nothing.
 `replyTo` is a tweet id or URL, `quoteUrl` a tweet URL. `media` is up to 4 images, or one GIF or video, each `{"url": "https://..."}` or `{"data": "<base64>", "type": "image/png"}`. Limits: image 5 MB, GIF 15 MB, video 512 MB (the JSON body is capped at 32 MB, use `url` for large files).
 

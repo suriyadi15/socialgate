@@ -5,7 +5,7 @@ import { clearCache } from '../src/cache';
 import { getSessionUpdates, parseConfigHeader, recordSession, runWithEnv } from '../src/context';
 import { HttpError } from '../src/errors';
 import { buildCreateTweetVariables, categoryOf, checkMedia, chunks, mapGraphqlError, tweetIdOf } from '../src/platforms/twitter-post';
-import { cookieString, parseJar } from '../src/platforms/twitter';
+import { cookieString, parseJar, renewCsrf } from '../src/platforms/twitter';
 
 const app = createApp('k');
 const auth = { authorization: 'Bearer k' };
@@ -108,5 +108,24 @@ describe('media', () => {
     test('chunks', () => {
         const parts = chunks(new Uint8Array(10), 4);
         expect(parts.map((p) => p.length)).toEqual([4, 4, 2]);
+    });
+});
+
+describe('stale csrf', () => {
+    test('a fresh ct0 in the refusal is adopted and reported once', () => {
+        const refused = new Response('', { status: 403, headers: { 'set-cookie': 'ct0=newvalue; Path=/; Secure' } });
+        runWithEnv({}, () => {
+            const jar = renewCsrf({ auth_token: 'a', ct0: 'old' }, refused);
+            expect(jar).toEqual({ auth_token: 'a', ct0: 'newvalue' });
+            expect(getSessionUpdates()).toEqual({ TWITTER_COOKIE: 'auth_token=a; ct0=newvalue' });
+        });
+    });
+    test('nothing to renew when the refusal brings no new ct0', () => {
+        runWithEnv({}, () => {
+            expect(renewCsrf({ auth_token: 'a', ct0: 'same' }, new Response('', { status: 403 }))).toBeUndefined();
+            const same = new Response('', { status: 403, headers: { 'set-cookie': 'ct0=same; Path=/' } });
+            expect(renewCsrf({ auth_token: 'a', ct0: 'same' }, same)).toBeUndefined();
+            expect(getSessionUpdates()).toEqual({});
+        });
     });
 });

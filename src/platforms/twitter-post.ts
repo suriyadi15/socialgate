@@ -3,7 +3,7 @@
 import { recordSession } from '../context';
 import { badRequest, HttpError, needsCredential, notFound } from '../errors';
 import { request } from '../http';
-import { apiUrl, bearerToken, cookieString, getCookies, getQueryIds, getTransactionId, requireCredential } from './twitter';
+import { apiUrl, bearerToken, cookieString, getCookies, getQueryIds, getTransactionId, renewCsrf, requireCredential, twitterGet } from './twitter';
 
 const uploadUrl = 'https://upload.x.com/i/media/upload.json';
 
@@ -75,7 +75,7 @@ type Call = {
 };
 
 /** A call to the web API as the logged-in account. A 404 that comes with a transaction id is retried once with fresh keys. */
-const twitterCall = async (url: string, call: Call = {}, refreshTransactionId = false): Promise<Response> => {
+const twitterCall = async (url: string, call: Call = {}, refreshTransactionId = false, csrfRetried = false): Promise<Response> => {
     const cookies = await getCookies(call.refreshCookies);
     const method = call.method ?? 'GET';
     const transactionId = call.transactionPath ? await getTransactionId(method, call.transactionPath, refreshTransactionId) : undefined;
@@ -90,11 +90,12 @@ const twitterCall = async (url: string, call: Call = {}, refreshTransactionId = 
             authorization: bearerToken,
             'cache-control': 'no-cache',
             cookie: cookieString(cookies),
-            origin: 'https://x.com',
+            // Reads look like the web app's own calls (same as the feed routes); writes also go to upload.x.com
+            ...(method === 'POST' && { origin: 'https://x.com' }),
             referer: 'https://x.com/',
             'sec-fetch-dest': 'empty',
             'sec-fetch-mode': 'cors',
-            'sec-fetch-site': 'same-site',
+            'sec-fetch-site': method === 'POST' ? 'same-site' : 'same-origin',
             'x-csrf-token': cookies.ct0,
             'x-twitter-active-user': 'yes',
             'x-twitter-auth-type': 'OAuth2Session',
@@ -116,7 +117,11 @@ const twitterCall = async (url: string, call: Call = {}, refreshTransactionId = 
     }
     // A rejected transaction id never reaches the action, so repeating the call cannot post twice
     if (response.status === 404 && transactionId && !refreshTransactionId) {
-        return twitterCall(url, call, true);
+        return twitterCall(url, call, true, csrfRetried);
+    }
+    // A stale csrf cookie is refused before the action runs, so repeating the call with the fresh one cannot post twice
+    if ((response.status === 401 || response.status === 403) && !csrfRetried && renewCsrf(cookies, response)) {
+        return twitterCall(url, { ...call, refreshCookies: false }, refreshTransactionId, true);
     }
     if (response.status === 401 || response.status === 403) {
         throw needsCredential('Twitter refused the credential (TWITTER_AUTH_TOKEN / TWITTER_COOKIE), it is expired, locked or blocked.');
@@ -372,26 +377,31 @@ export const deleteTweet = async (idOrUrl: string) => {
     return { id, deleted: true };
 };
 
-export const getMe = async (refreshCookies = false) => {
+/** The numeric id of the account, from the `twid` cookie (`u%3D<id>`) a logged-in jar carries. */
+const accountIdOf = (jar: Record<string, string>): string | undefined => decodeURIComponent(jar.twid ?? '').match(/^u=(\d+)$/)?.[1];
+
+/**
+ * Who the credential belongs to, proven by a logged-in GraphQL read (the 1.1 account endpoints answer 404 on the web API now).
+ * With `username` the read is UserByScreenName, the same call the feed routes make and the one X accepts reliably; without it
+ * the id comes from the `twid` cookie (UserByRestId, whose live query id is not always accepted). 401/403 become 503.
+ */
+export const getMe = async (refreshCookies = false, username?: string) => {
     requireCredential();
-    const settingsResponse = await twitterCall(`${apiUrl}/1.1/account/settings.json`, { refreshCookies });
-    if (!settingsResponse.ok) {
-        throw new HttpError(502, `Twitter answered ${settingsResponse.status}.`);
+    const jar = await getCookies(refreshCookies);
+    const id = accountIdOf(jar);
+    if (!username && !id) {
+        // A jar built from a bare auth_token has no twid: ct0 was handed out, but the account is not known
+        return { id: undefined, username: undefined, name: undefined };
     }
-    const username: string | undefined = ((await settingsResponse.json()) as any)?.screen_name;
-    if (!username) {
+    const data = username
+        ? await twitterGet('UserByScreenName', { screen_name: username.replace(/^@/, ''), withSafetyModeUserFields: true })
+        : await twitterGet('UserByRestId', { userId: id, withSafetyModeUserFields: true });
+    const user = data?.data?.user?.result;
+    if (!user?.rest_id) {
         throw needsCredential('Twitter did not return the account of the credential.');
     }
-    const ids = await getQueryIds();
-    const query = new URLSearchParams({
-        variables: JSON.stringify({ screen_name: username, withSafetyModeUserFields: true }),
-        features: JSON.stringify(userFeatures),
-        fieldToggles: JSON.stringify({ withAuxiliaryUserLabels: false }),
-    });
-    const response = await twitterCall(`${apiUrl}/graphql/${ids.UserByScreenName}/UserByScreenName?${query}`);
-    const user = response.ok ? ((await response.json()) as any)?.data?.user?.result : undefined;
-    return { id: user?.rest_id as string | undefined, username, name: (user?.core?.name ?? user?.legacy?.name) as string | undefined };
+    return { id: user.rest_id as string, username: (user.core?.screen_name ?? user.legacy?.screen_name) as string | undefined, name: (user.core?.name ?? user.legacy?.name) as string | undefined };
 };
 
 /** Health of the credential: the account it belongs to, checked live. 503 = expired/locked, 429 = limited. */
-export const getSession = async () => ({ account: await getMe(true) });
+export const getSession = async (username?: string) => ({ account: await getMe(true, username) });
